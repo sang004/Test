@@ -5,9 +5,9 @@
 ##DESCRIPTION : This code retrieves attributes of samples, working solutions and controls from the server, triplicates them and
 ##              determines the new well plate positions ignoring their original postion. Triplicated working solutions and
 ##              controls are place in the first 3 rows and in a downwards fashion. Artifacts are also placed in a similar fashion.
-##VERSION    :  2.2.1
+##				v2.3.1 getContainer uses xml attributes
+##VERSION    :  2.3.1
 ###############################################
-
 import sys
 import getopt
 import xml.dom.minidom
@@ -76,6 +76,20 @@ def getArtifact( limsid ):
         response = ARTIFACTS[ limsid ]
         return response
 
+def getContainer( limsid ):
+        response = ""
+
+        gURI = BASE_URI + "containers/" + limsid
+        gXML = api.getResourceByURI( gURI )
+        gDOM = parseString( gXML )
+
+        Nodes = gDOM.getElementsByTagName("con:container")
+        if(Nodes):
+                temp = Nodes[0].getElementsByTagName("type")
+                response = temp[0].getAttribute("name")
+
+        return response
+
 def createContainer( type, name ):
 
         response = ""
@@ -100,10 +114,9 @@ def createContainer( type, name ):
         if Nodes:
                 temp = Nodes[0].getAttribute( "limsid" )
                 response = temp
-
         return response
 
-def getNewWP( iWP, replicateType, replicateNumber):
+def getNewWP( iWP, replicateType, replicateNumber, noOfWS, containerName ):
 
         global placeFlag
         global rowNum
@@ -113,16 +126,25 @@ def getNewWP( iWP, replicateType, replicateNumber):
 
         pos = 1
         temp = 0
+        rowsInContainer = 0
 
-        print("PF: " + str(placeFlag))
-        print("RNum: " + str(replicateNumber))
+        if(containerName == "96 well plate"):   #decides when to shift col due to end of rows
+                rowsInContainer = 8
+        else:
+                rowsInContainer = 16
+
         if(placeFlag == 0):             #if its the first sample, set everything to default
-                wsOffset = 3
-				letterVal = 65
+                letterVal = 65
                 placeFlag = 1
                 sampleCount = 0
                 rowNum = 0
-				
+                wsOffset = 3
+
+#               if(noOfWS < 1):
+#                       wsOffset = 0 * replicateNumber
+#               else:
+#                       wsOffset = 1 * replicateNumber
+
                 for n in range (0, replicateNumber):            #replicateNumber determines arr length, each element if wsOffset plus index+1
                         wellArr.insert(n, wsOffset+pos)
                         print(str(wellArr[n]))
@@ -130,10 +152,10 @@ def getNewWP( iWP, replicateType, replicateNumber):
 
         else:
                 sampleCount = sampleCount + 1
-                temp2 = sampleCount % (8*replicateNumber)       #there is 24 samples, including the triplicates in 3 cols, A - H
+                temp2 = sampleCount % (rowsInContainer*replicateNumber)       #there is 24 samples, including the triplicates in 3 cols, A - H
                 if(not temp2 == 0):             #if between row A to H on 96 well plate
 
-                        temp = sampleCount % replicateNumber            #only change row for every 4th sample
+                        temp = sampleCount % replicateNumber            #only change row for every 3rd sample
                         if(temp == 0):
                                 letterVal = letterVal + 1       #increase to next row
                                 rowNum = rowNum + 1
@@ -161,11 +183,35 @@ def getWS_WP( name, replicateNumber ):
 
         return WP
 
+def getWSCount():
+        count = 0
+        for key in I2OMap:
+                outs = I2OMap[ key ]
+
+                for output in outs:
+                        oDOM = getArtifact( output )
+                        Nodes = oDOM.getElementsByTagName( "name" )
+                        oName = api.getInnerXml( Nodes[0].toxml(), "name" )
+                        if DEBUG: print oName
+
+                        WP = ""
+
+                        if oName.find( "_1" ) > -1: replicateNumber = 1
+                        elif oName.find( "_2" ) > -1: replicateNumber = 2
+                        elif oName.find( "_3" ) > -1: replicateNumber = 3
+
+                        ## are we dealing with control samples?
+                        if oName.find( "Working Solution" ) > -1:
+                                count =+ 1
+        return count
+
 def autoPlace():
 
         global I2OMap
         wsCountNum = 0
-        c96 = createContainer( '96', '96 WP' )
+
+        containerType = createContainer( '96', '96 WP' )
+        containerName = getContainer(containerType)
 
         ## step one: get the process XML
         pURI = BASE_URI + "processes/" + args[ "limsid" ]
@@ -218,10 +264,11 @@ def autoPlace():
                 pXML += ( '<step uri="' + args[ "stepURI" ] + '"/>' )
                 pXML += getStepConfiguration()
                 pXML += '<selected-containers>'
-                pXML += ( '<container uri="' + BASE_URI + 'containers/' + c96 + '"/>' )
+                pXML += ( '<container uri="' + BASE_URI + 'containers/' + containerType + '"/>' )
                 pXML += '</selected-containers><output-placements>'
 
                 highestControlPosition = ""
+                noOfWS = getWSCount()
 
                 ## let's process our cache, one input at a time, but ignore some control samples
                 for key in I2OMap:
@@ -259,13 +306,13 @@ def autoPlace():
                                 elif oName.find( "Positive Control" ) > -1:
                                         continue
                                 else:
-                                        WP = getNewWP( iWP, replicateNumber, counts[0])
+                                        WP = getNewWP( iWP, replicateNumber, counts[0], noOfWS, containerName )
 
                                 if DEBUG: print( oName, WP )
 
                                 if WP != "":
                                         plXML = '<output-placement uri="' + oURI + '">'
-                                        plXML += ( '<location><container uri="' + BASE_URI + 'containers/' + c96 + '" limsid="' + c96 + '"/>' )
+                                        plXML += ( '<location><container uri="' + BASE_URI + 'containers/' + containerType + '" limsid="' + containerType + '"/>' )
                                         plXML += ( '<value>' + WP + '</value></location></output-placement>' )
 
                                         pXML += plXML
@@ -306,7 +353,7 @@ def autoPlace():
 
                                 if WP != "":
                                         plXML = '<output-placement uri="' + oURI + '">'
-                                        plXML += ( '<location><container uri="' + BASE_URI + 'containers/' + c96 + '" limsid="' + c96 + '"/>' )
+                                        plXML += ( '<location><container uri="' + BASE_URI + 'containers/' + containerType + '" limsid="' + containerType + '"/>' )
                                         plXML += ( '<value>' + WP + '</value></location></output-placement>' )
 
                                         pXML += plXML
